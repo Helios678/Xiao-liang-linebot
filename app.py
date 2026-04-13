@@ -46,7 +46,7 @@ conversations = ConversationManager()
 claude        = ClaudeClient(ANTHROPIC_API_KEY)
 memory        = MemoryManager()
 
-# ── Rate Limiting（每人每60秒最多5則，主公豁免）────────────────────────────────
+# ── Rate Limiting（每人每60秒最多5則，哥豁免）────────────────────────────────
 _rate: dict[str, deque] = defaultdict(deque)
 
 def _rate_ok(user_id: str) -> bool:
@@ -80,15 +80,15 @@ HELP_TEXT = (
     "📌 一般問答：問什麼都可以\n"
     "📈 股票查詢：小亮 查2330 / 小亮 查台積電\n"
     "📰 公司新聞：小亮 查新聞 2330\n"
-    "💼 持倉損益：小亮 持倉（僅主公）\n"
+    "💼 持倉損益：小亮 持倉（僅哥）\n"
     "🧠 記住事情：小亮 記住：...\n"
     "🔄 清除對話：小亮 重置\n"
-    "📋 查看記憶：小亮 查看記憶（僅主公）\n\n"
+    "📋 查看記憶：小亮 查看記憶（僅哥）\n\n"
     "私人問題建議私訊給我，群組裡不討論個人隱私。"
 )
 
 JOIN_TEXT = (
-    "大家好！我是小亮，主公的智囊助手。\n"
+    "大家好！我是小亮，哥的智囊助手。\n"
     "叫我的方式：訊息開頭加 @小亮 或直接打「小亮」\n"
     "想知道我能做什麼，輸入：小亮 幫助"
 )
@@ -183,7 +183,7 @@ def handle_message(event: MessageEvent):
     else:
         user_text = raw_text
 
-    # Rate Limiting（主公豁免）
+    # Rate Limiting（哥豁免）
     if not is_admin(user_id) and not _rate_ok(user_id):
         send_reply(event.reply_token, "小亮需要休息一下，請 60 秒後再試。")
         return
@@ -204,26 +204,26 @@ def handle_message(event: MessageEvent):
         send_reply(event.reply_token, HELP_TEXT)
         return
 
-    # 查看記憶（主公限定）
+    # 查看記憶（哥限定）
     if user_text == "查看記憶":
         if not is_admin(user_id):
-            send_reply(event.reply_token, "這個指令只有主公可以使用。")
+            send_reply(event.reply_token, "這個指令只有哥可以使用。")
             return
         send_reply(event.reply_token, memory.get_all_summary())
         return
 
-    # 持倉損益（主公限定，群組中拒絕）
+    # 持倉損益（哥限定，群組中拒絕）
     if any(user_text.startswith(kw) for kw in PORTFOLIO_KW):
         if in_group:
             send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
             return
         if not is_admin(user_id):
-            send_reply(event.reply_token, "持倉資訊只有主公可以查詢。")
+            send_reply(event.reply_token, "持倉資訊只有哥可以查詢。")
             return
         send_reply(event.reply_token, get_portfolio_summary())
         return
 
-    # 高耗能請求審核：主公同意/拒絕
+    # 高耗能請求審核：哥同意/拒絕
     if is_admin(user_id) and user_text in ("同意", "執行"):
         if not _pending:
             send_reply(event.reply_token, "目前沒有待審請求。")
@@ -234,7 +234,7 @@ def handle_message(event: MessageEvent):
         reply = claude.chat(history, req["text"])
         conversations.add(req["user_id"], "user", req["text"])
         conversations.add(req["user_id"], "assistant", reply)
-        push_msg(req["user_id"], f"主公已同意，以下是回覆：\n\n{reply}")
+        push_msg(req["user_id"], f"哥已同意，以下是回覆：\n\n{reply}")
         return
 
     if is_admin(user_id) and user_text == "拒絕":
@@ -243,7 +243,7 @@ def handle_message(event: MessageEvent):
             return
         req = _pending.pop(0)
         send_reply(event.reply_token, f"已拒絕 {req['name']} 的請求。")
-        push_msg(req["user_id"], "主公考量後決定不處理這個請求，有其他問題歡迎再問。")
+        push_msg(req["user_id"], "哥考量後決定不處理這個請求，有其他問題歡迎再問。")
         return
 
     if is_admin(user_id) and user_text == "待審請求":
@@ -266,7 +266,7 @@ def handle_message(event: MessageEvent):
     if user_text.startswith("記住：") or user_text.startswith("記住:"):
         content = user_text[3:].strip()
         name, _ = memory.get_member_by_id(user_id)
-        recorder = "主公" if is_admin(user_id) else (name or user_id[:8])
+        recorder = "哥" if is_admin(user_id) else (name or user_id[:8])
         memory.add_event(content, recorder)
         send_reply(event.reply_token, f"好的，已記住：{content}")
         return
@@ -279,7 +279,7 @@ def handle_message(event: MessageEvent):
         send_reply(event.reply_token, f"好的，{name}！很高興認識你，有什麼需要幫忙的嗎？")
         return
 
-    # 新用戶第一次發言（非主公）
+    # 新用戶第一次發言（非哥）
     if not is_admin(user_id) and memory.is_new_user(user_id):
         _awaiting_name.add(user_id)
         send_reply(event.reply_token, "你好，我是小亮！請問怎麼稱呼你？")
@@ -295,14 +295,14 @@ def handle_message(event: MessageEvent):
         send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
         return
 
-    # 高耗能請求（非主公）
+    # 高耗能請求（非哥）
     if not is_admin(user_id) and (
         len(user_text) > 200 or any(kw in user_text for kw in HIGH_ENERGY_KW)
     ):
         member_name, _ = memory.get_member_by_id(user_id)
         display_name = member_name or user_id[:8]
         _pending.append({"user_id": user_id, "name": display_name, "text": user_text})
-        send_reply(event.reply_token, "這個請求需要消耗較多資源，已通知主公確認，請稍候。")
+        send_reply(event.reply_token, "這個請求需要消耗較多資源，已通知哥確認，請稍候。")
         if ADMIN_USER_ID:
             push_msg(
                 ADMIN_USER_ID,
@@ -322,7 +322,7 @@ def handle_message(event: MessageEvent):
     if mem_ctx:
         ctx_parts.append(f"【用戶背景】\n{mem_ctx}")
     if is_admin(user_id):
-        ctx_parts.append("【注意】這位是主公（管理員），有所有功能權限。")
+        ctx_parts.append("【注意】這位是哥（管理員），有所有功能權限。")
     if stock_info:
         ctx_parts.append(f"【股票即時資料】\n{stock_info}")
 
