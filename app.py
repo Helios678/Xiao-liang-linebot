@@ -1,86 +1,272 @@
 """
 小亮 LINE Bot — 主程式
+功能：群組模式、股票查詢、家人記憶、Rate Limiting
 """
 
 import os
+import re
+import time
+from collections import defaultdict, deque
 from dotenv import load_dotenv
 from flask import Flask, request, abort
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    ReplyMessageRequest,
+    Configuration, ApiClient, MessagingApi,
+    ReplyMessageRequest, PushMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import (
+    MessageEvent, TextMessageContent,
+    ImageMessageContent, AudioMessageContent,
+    StickerMessageContent, VideoMessageContent, FileMessageContent,
+    JoinEvent,
+)
 
 from conversation import ConversationManager
 from claude_client import ClaudeClient
+from stock_client import query_stock
+from memory_manager import MemoryManager
 
 # ── 載入環境變數 ────────────────────────────────────────────────────────────────
 load_dotenv()
 
-ANTHROPIC_API_KEY      = os.environ["ANTHROPIC_API_KEY"]
-LINE_CHANNEL_SECRET    = os.environ["LINE_CHANNEL_SECRET"]
+ANTHROPIC_API_KEY         = os.environ["ANTHROPIC_API_KEY"]
+LINE_CHANNEL_SECRET       = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+ADMIN_USER_ID             = os.environ.get("ADMIN_USER_ID", "")
 
 # ── 初始化 ──────────────────────────────────────────────────────────────────────
-app = Flask(__name__)
+app           = Flask(__name__)
+handler       = WebhookHandler(LINE_CHANNEL_SECRET)
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+conversations = ConversationManager()
+claude        = ClaudeClient(ANTHROPIC_API_KEY)
+memory        = MemoryManager()
 
-handler        = WebhookHandler(LINE_CHANNEL_SECRET)
-configuration  = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-conversations  = ConversationManager()
-claude         = ClaudeClient(ANTHROPIC_API_KEY)
+# ── Rate Limiting（每人每60秒最多5則，主公豁免）────────────────────────────────
+_rate: dict[str, deque] = defaultdict(deque)
 
+def _rate_ok(user_id: str) -> bool:
+    now = time.time()
+    q = _rate[user_id]
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= 5:
+        return False
+    q.append(now)
+    return True
+
+# ── 等待姓名輸入的用戶（記憶體中暫存）──────────────────────────────────────────
+_awaiting_name: set[str] = set()
+
+# ── 常數 ────────────────────────────────────────────────────────────────────────
+TRIGGER    = re.compile(r"^(@小亮|小亮)\s*", re.IGNORECASE)
+STOCK_RE   = re.compile(r"^查\s*(\S+)")
+PRIVACY_KW = ["感情", "戀愛", "外遇", "病情", "診斷", "收入", "薪水", "存款", "債務"]
+FINANCE_KW = ["持倉", "損益", "投資組合", "我的股票", "我的持股"]
+
+HELP_TEXT = (
+    "我是小亮，以下是我能做的事：\n"
+    "📌 一般問答：問什麼都可以\n"
+    "📈 股票查詢：小亮 查2330 / 小亮 查台積電\n"
+    "🧠 記住事情：小亮 記住：...\n"
+    "🔄 清除對話：小亮 重置\n"
+    "📋 查看記憶：小亮 查看記憶（僅主公）\n\n"
+    "私人問題建議私訊給我，群組裡不討論個人隱私。"
+)
+
+JOIN_TEXT = (
+    "大家好！我是小亮，主公的智囊助手。\n"
+    "叫我的方式：訊息開頭加 @小亮 或直接打「小亮」\n"
+    "想知道我能做什麼，輸入：小亮 幫助"
+)
+
+# ── 工具函式 ────────────────────────────────────────────────────────────────────
+def is_admin(user_id: str) -> bool:
+    return bool(ADMIN_USER_ID) and user_id == ADMIN_USER_ID
+
+def is_group(event) -> bool:
+    return getattr(event.source, "type", "") in ("group", "room")
+
+def split_reply(text: str) -> list[str]:
+    if len(text) <= 4500:
+        return [text]
+    parts = []
+    while len(text) > 4500:
+        parts.append(text[:4500] + "（續）")
+        text = text[4500:]
+    parts.append(text)
+    return parts
+
+def send_reply(reply_token: str, text: str):
+    parts = split_reply(text)[:5]
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text=p) for p in parts],
+            )
+        )
+
+def push_msg(to: str, text: str):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).push_message(
+            PushMessageRequest(to=to, messages=[TextMessage(text=text)])
+        )
 
 # ── Webhook 端點 ────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
 def webhook():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
 
+# ── Bot 加入群組 ─────────────────────────────────────────────────────────────────
+@handler.add(JoinEvent)
+def handle_join(event: JoinEvent):
+    send_reply(event.reply_token, JOIN_TEXT)
 
-# ── 處理文字訊息 ────────────────────────────────────────────────────────────────
+# ── 非文字訊息 ───────────────────────────────────────────────────────────────────
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image(event: MessageEvent):
+    if not is_group(event):
+        send_reply(event.reply_token, "小亮目前無法看圖，請用文字描述。")
+
+@handler.add(MessageEvent, message=AudioMessageContent)
+def handle_audio(event: MessageEvent):
+    if not is_group(event):
+        send_reply(event.reply_token, "小亮無法處理語音，請打字。")
+
+@handler.add(MessageEvent, message=StickerMessageContent)
+def handle_sticker(event: MessageEvent):
+    pass
+
+@handler.add(MessageEvent, message=VideoMessageContent)
+def handle_video(event: MessageEvent):
+    pass
+
+@handler.add(MessageEvent, message=FileMessageContent)
+def handle_file(event: MessageEvent):
+    pass
+
+# ── 文字訊息（核心）────────────────────────────────────────────────────────────
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event: MessageEvent):
-    user_id = event.source.user_id
-    user_text = event.message.text.strip()
+    user_id  = event.source.user_id
+    raw_text = event.message.text.strip()
+    in_group = is_group(event)
 
-    # 清除對話指令
+    # 群組模式：只回應觸發詞開頭
+    if in_group:
+        m = TRIGGER.match(raw_text)
+        if not m:
+            return
+        user_text = raw_text[m.end():].strip()
+        if not user_text:
+            return
+    else:
+        user_text = raw_text
+
+    # Rate Limiting（主公豁免）
+    if not is_admin(user_id) and not _rate_ok(user_id):
+        send_reply(event.reply_token, "小亮需要休息一下，請 60 秒後再試。")
+        return
+
+    # /myid — 查自己的 LINE userId（設定 ADMIN_USER_ID 用）
+    if user_text == "/myid":
+        send_reply(event.reply_token, f"你的 LINE userId：\n{user_id}")
+        return
+
+    # 清除對話
     if user_text in ("/reset", "清除對話", "重置"):
         conversations.clear(user_id)
-        reply = "對話記憶已清除，我們重新開始。"
-    else:
-        history = conversations.get(user_id)
-        reply = claude.chat(history, user_text)
-        conversations.add(user_id, "user", user_text)
-        conversations.add(user_id, "assistant", reply)
+        send_reply(event.reply_token, "對話記憶已清除，我們重新開始。")
+        return
 
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=reply)],
-            )
-        )
+    # 幫助
+    if user_text in ("幫助", "help", "Help", "說明"):
+        send_reply(event.reply_token, HELP_TEXT)
+        return
 
+    # 查看記憶（主公限定）
+    if user_text == "查看記憶":
+        if not is_admin(user_id):
+            send_reply(event.reply_token, "這個指令只有主公可以使用。")
+            return
+        send_reply(event.reply_token, memory.get_all_summary())
+        return
+
+    # 記住指令
+    if user_text.startswith("記住：") or user_text.startswith("記住:"):
+        content = user_text[3:].strip()
+        name, _ = memory.get_member_by_id(user_id)
+        recorder = "主公" if is_admin(user_id) else (name or user_id[:8])
+        memory.add_event(content, recorder)
+        send_reply(event.reply_token, f"好的，已記住：{content}")
+        return
+
+    # 新成員姓名流程：等待回覆姓名
+    if user_id in _awaiting_name and not is_admin(user_id):
+        name = user_text.strip()
+        memory.register_member(user_id, name)
+        _awaiting_name.discard(user_id)
+        send_reply(event.reply_token, f"好的，{name}！很高興認識你，有什麼需要幫忙的嗎？")
+        return
+
+    # 新用戶第一次發言（非主公）
+    if not is_admin(user_id) and memory.is_new_user(user_id):
+        _awaiting_name.add(user_id)
+        send_reply(event.reply_token, "你好，我是小亮！請問怎麼稱呼你？")
+        return
+
+    # 隱私引導（群組中）
+    if in_group and not is_admin(user_id) and any(kw in user_text for kw in PRIVACY_KW):
+        send_reply(event.reply_token, "這個問題比較私人，建議私訊給我，群組裡不方便討論。")
+        return
+
+    # 持倉查詢（群組中一律拒絕）
+    if in_group and any(kw in user_text for kw in FINANCE_KW):
+        send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
+        return
+
+    # 股票查詢
+    stock_info = ""
+    sm = STOCK_RE.match(user_text)
+    if sm:
+        stock_info = query_stock(sm.group(1))
+
+    # 組合 extra_context 給 Claude
+    ctx_parts = []
+    mem_ctx = memory.get_user_context(user_id)
+    if mem_ctx:
+        ctx_parts.append(f"【用戶背景】\n{mem_ctx}")
+    if is_admin(user_id):
+        ctx_parts.append("【注意】這位是主公（管理員），有所有功能權限。")
+    if stock_info:
+        ctx_parts.append(f"【股票即時資料】\n{stock_info}")
+
+    # 組合給 Claude 的訊息（股票資料直接附在訊息中）
+    enhanced = user_text
+    if stock_info:
+        enhanced = f"{user_text}\n\n[即時股票資料]\n{stock_info}"
+
+    history = conversations.get(user_id)
+    reply   = claude.chat(history, enhanced, "\n\n".join(ctx_parts))
+    conversations.add(user_id, "user", user_text)
+    conversations.add(user_id, "assistant", reply)
+
+    send_reply(event.reply_token, reply)
 
 # ── 健康檢查 ────────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def health():
     return "小亮在線 ✓"
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
