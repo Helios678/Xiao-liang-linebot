@@ -3,6 +3,7 @@
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 from flask import Flask, request, abort
 
@@ -28,7 +29,9 @@ LINE_CHANNEL_SECRET    = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 
 # ── 初始化 ──────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
+app.logger.info(f"[STARTUP] SECRET len={len(LINE_CHANNEL_SECRET)} first4={LINE_CHANNEL_SECRET[:4]}")
 
 handler        = WebhookHandler(LINE_CHANNEL_SECRET)
 configuration  = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -45,6 +48,7 @@ def webhook():
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        app.logger.error(f"[SIG FAIL] body_len={len(body)} sig={signature[:20]}...")
         abort(400)
 
     return "OK"
