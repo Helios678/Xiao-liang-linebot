@@ -26,8 +26,9 @@ from linebot.v3.webhooks import (
 
 from conversation import ConversationManager
 from claude_client import ClaudeClient
-from stock_client import query_stock
+from stock_client import query_stock, query_news
 from memory_manager import MemoryManager
+from portfolio_client import get_portfolio_summary
 
 # ── 載入環境變數 ────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -61,16 +62,25 @@ def _rate_ok(user_id: str) -> bool:
 # ── 等待姓名輸入的用戶（記憶體中暫存）──────────────────────────────────────────
 _awaiting_name: set[str] = set()
 
+# ── 高耗能請求待審佇列 ───────────────────────────────────────────────────────────
+# [{user_id, source_id, text, name}]
+_pending: list[dict] = []
+
 # ── 常數 ────────────────────────────────────────────────────────────────────────
-TRIGGER    = re.compile(r"^(@小亮|小亮)\s*", re.IGNORECASE)
-STOCK_RE   = re.compile(r"^查\s*(\S+)")
-PRIVACY_KW = ["感情", "戀愛", "外遇", "病情", "診斷", "收入", "薪水", "存款", "債務"]
-FINANCE_KW = ["持倉", "損益", "投資組合", "我的股票", "我的持股"]
+TRIGGER       = re.compile(r"^(@小亮|小亮)\s*", re.IGNORECASE)
+STOCK_RE      = re.compile(r"^查\s*(\S+)")
+NEWS_RE       = re.compile(r"^(?:查新聞|新聞)\s*(\d{4,6})")
+PRIVACY_KW    = ["感情", "戀愛", "外遇", "病情", "診斷", "收入", "薪水", "存款", "債務"]
+FINANCE_KW    = ["持倉", "損益", "投資組合", "我的股票", "我的持股"]
+PORTFOLIO_KW  = ["持倉", "損益", "查持倉", "投資組合"]
+HIGH_ENERGY_KW = ["幫我寫", "寫一篇", "翻譯全文", "詳細分析", "完整報告", "全面分析", "幫我研究"]
 
 HELP_TEXT = (
     "我是小亮，以下是我能做的事：\n"
     "📌 一般問答：問什麼都可以\n"
     "📈 股票查詢：小亮 查2330 / 小亮 查台積電\n"
+    "📰 公司新聞：小亮 查新聞 2330\n"
+    "💼 持倉損益：小亮 持倉（僅主公）\n"
     "🧠 記住事情：小亮 記住：...\n"
     "🔄 清除對話：小亮 重置\n"
     "📋 查看記憶：小亮 查看記憶（僅主公）\n\n"
@@ -202,6 +212,56 @@ def handle_message(event: MessageEvent):
         send_reply(event.reply_token, memory.get_all_summary())
         return
 
+    # 持倉損益（主公限定，群組中拒絕）
+    if any(user_text.startswith(kw) for kw in PORTFOLIO_KW):
+        if in_group:
+            send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
+            return
+        if not is_admin(user_id):
+            send_reply(event.reply_token, "持倉資訊只有主公可以查詢。")
+            return
+        send_reply(event.reply_token, get_portfolio_summary())
+        return
+
+    # 高耗能請求審核：主公同意/拒絕
+    if is_admin(user_id) and user_text in ("同意", "執行"):
+        if not _pending:
+            send_reply(event.reply_token, "目前沒有待審請求。")
+            return
+        req = _pending.pop(0)
+        send_reply(event.reply_token, f"執行中，稍後回覆 {req['name']}。")
+        history = conversations.get(req["user_id"])
+        reply = claude.chat(history, req["text"])
+        conversations.add(req["user_id"], "user", req["text"])
+        conversations.add(req["user_id"], "assistant", reply)
+        push_msg(req["user_id"], f"主公已同意，以下是回覆：\n\n{reply}")
+        return
+
+    if is_admin(user_id) and user_text == "拒絕":
+        if not _pending:
+            send_reply(event.reply_token, "目前沒有待審請求。")
+            return
+        req = _pending.pop(0)
+        send_reply(event.reply_token, f"已拒絕 {req['name']} 的請求。")
+        push_msg(req["user_id"], "主公考量後決定不處理這個請求，有其他問題歡迎再問。")
+        return
+
+    if is_admin(user_id) and user_text == "待審請求":
+        if not _pending:
+            send_reply(event.reply_token, "目前沒有待審請求。")
+        else:
+            lines = [f"待審請求（共 {len(_pending)} 筆）："]
+            for i, r in enumerate(_pending, 1):
+                lines.append(f"{i}. {r['name']}：{r['text'][:50]}")
+            send_reply(event.reply_token, "\n".join(lines))
+        return
+
+    # 公司新聞查詢
+    nm = NEWS_RE.match(user_text)
+    if nm:
+        send_reply(event.reply_token, query_news(nm.group(1)))
+        return
+
     # 記住指令
     if user_text.startswith("記住：") or user_text.startswith("記住:"):
         content = user_text[3:].strip()
@@ -233,6 +293,21 @@ def handle_message(event: MessageEvent):
     # 持倉查詢（群組中一律拒絕）
     if in_group and any(kw in user_text for kw in FINANCE_KW):
         send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
+        return
+
+    # 高耗能請求（非主公）
+    if not is_admin(user_id) and (
+        len(user_text) > 200 or any(kw in user_text for kw in HIGH_ENERGY_KW)
+    ):
+        member_name, _ = memory.get_member_by_id(user_id)
+        display_name = member_name or user_id[:8]
+        _pending.append({"user_id": user_id, "name": display_name, "text": user_text})
+        send_reply(event.reply_token, "這個請求需要消耗較多資源，已通知主公確認，請稍候。")
+        if ADMIN_USER_ID:
+            push_msg(
+                ADMIN_USER_ID,
+                f"收到 {display_name} 的高耗能請求：\n\n{user_text}\n\n回覆「同意」執行，「拒絕」則婉拒。"
+            )
         return
 
     # 股票查詢

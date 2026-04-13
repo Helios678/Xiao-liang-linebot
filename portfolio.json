@@ -1,0 +1,13 @@
+{
+  "positions": [
+    {
+      "code": "7754",
+      "market": "otc",
+      "name": "安基生技",
+      "shares": 1000,
+      "cost_per_share": 64.5,
+      "date_bought": "2026-04-13",
+      "note": "1張，興櫃生技，新藥研發"
+    }
+  ]
+}

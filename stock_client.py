@@ -60,6 +60,31 @@ def _pf(s) -> float | None:
         return None
 
 
+def query_news(code: str) -> str:
+    """查詢公司重大訊息（公開資訊觀測站），回傳純文字。"""
+    import re
+    url = (
+        f"https://mops.twse.com.tw/mops/web/ajax_t05st01"
+        f"?encodeURIComponent=1&step=1&firstin=1&off=1"
+        f"&keyword4=&code1=&TYPEK2=&checkbtn=&queryName=co_id"
+        f"&inpuType=co_id&TYPEK=all&isnew=false&co_id={code}&year=&season=&mtk="
+    )
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
+            text = resp.read().decode("utf-8")
+        pattern = r'<td[^>]*>\s*(\d{3}/\d{2}/\d{2})\s*</td>.*?<a[^>]*>([^<]+)</a>'
+        matches = re.findall(pattern, text, re.DOTALL)
+        if not matches:
+            return f"查不到 {code} 的重大訊息，或目前無公告。"
+        lines = [f"【{code} 重大訊息】"]
+        for date, title in matches[:5]:
+            lines.append(f"・{date}  {title.strip()}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"無法取得 {code} 的新聞：{e}"
+
+
 def query_stock(query: str) -> str:
     """查詢股票，回傳純文字結果。"""
     query = query.strip()
