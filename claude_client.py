@@ -63,5 +63,6 @@ class ClaudeClient:
             texts = [b.text for b in response.content if b.type == "text"]
             return "\n".join(texts) if texts else "小亮暫時無法回應"
 
-        except anthropic.APIError as e:
+        except Exception as e:
+            print(f"[ERROR] claude.chat failed: {e}")
             return f"小亮暫時無法回應：{e}"

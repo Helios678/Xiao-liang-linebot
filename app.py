@@ -6,6 +6,7 @@
 import os
 import re
 import time
+import threading
 from collections import defaultdict, deque
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -346,12 +347,20 @@ def handle_message(event: MessageEvent):
     if stock_info:
         enhanced = f"{user_text}\n\n[即時股票資料]\n{stock_info}"
 
-    history = conversations.get(user_id)
-    result  = claude.chat(history, enhanced, "\n\n".join(ctx_parts))
-    conversations.add(user_id, "user", user_text)
-    conversations.add(user_id, "assistant", result)
+    # Claude 呼叫在背景執行緒跑，避免佔住 Webhook 回應時間
+    # reply_token 可能在 Claude 回來前過期，直接用 push_msg 送出
+    def _call_claude():
+        try:
+            history = conversations.get(user_id)
+            result  = claude.chat(history, enhanced, "\n\n".join(ctx_parts))
+            conversations.add(user_id, "user", user_text)
+            conversations.add(user_id, "assistant", result)
+            push_msg(source_id, result)
+        except Exception as e:
+            print(f"[ERROR] _call_claude failed: {e}")
+            push_msg(source_id, f"小亮處理時出錯了：{e}")
 
-    reply(result)
+    threading.Thread(target=_call_claude, daemon=True).start()
 
 # ── 健康檢查 ────────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
