@@ -110,15 +110,21 @@ def split_reply(text: str) -> list[str]:
     parts.append(text)
     return parts
 
-def send_reply(reply_token: str, text: str):
+def send_reply(reply_token: str, text: str, fallback_to: str = ""):
+    """發送 reply message；若 reply_token 已過期則改用 push message 補送。"""
     parts = split_reply(text)[:5]
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text=p) for p in parts],
+    try:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=p) for p in parts],
+                )
             )
-        )
+    except Exception as e:
+        print(f"[WARN] reply_message failed ({e}), fallback push to {fallback_to!r}")
+        if fallback_to:
+            push_msg(fallback_to, text)
 
 def push_msg(to: str, text: str):
     with ApiClient(configuration) as api_client:
@@ -146,12 +152,14 @@ def handle_join(event: JoinEvent):
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
     if not is_group(event):
-        send_reply(event.reply_token, "小亮目前無法看圖，請用文字描述。")
+        user_id = event.source.user_id
+        send_reply(event.reply_token, "小亮目前無法看圖，請用文字描述。", fallback_to=user_id)
 
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event: MessageEvent):
     if not is_group(event):
-        send_reply(event.reply_token, "小亮無法處理語音，請打字。")
+        user_id = event.source.user_id
+        send_reply(event.reply_token, "小亮無法處理語音，請打字。", fallback_to=user_id)
 
 @handler.add(MessageEvent, message=StickerMessageContent)
 def handle_sticker(event: MessageEvent):
@@ -168,9 +176,16 @@ def handle_file(event: MessageEvent):
 # ── 文字訊息（核心）────────────────────────────────────────────────────────────
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event: MessageEvent):
-    user_id  = event.source.user_id
-    raw_text = event.message.text.strip()
-    in_group = is_group(event)
+    user_id   = event.source.user_id
+    raw_text  = event.message.text.strip()
+    in_group  = is_group(event)
+    source_id = (getattr(event.source, "group_id", None)
+                 or getattr(event.source, "room_id", None)
+                 or user_id)
+
+    # reply token 過期時的 fallback 目標（群組推給群組，私訊推給個人）
+    def reply(text: str):
+        send_reply(event.reply_token, text, fallback_to=source_id)
 
     # 群組模式：只回應觸發詞開頭
     if in_group:
@@ -185,81 +200,81 @@ def handle_message(event: MessageEvent):
 
     # Rate Limiting（哥豁免）
     if not is_admin(user_id) and not _rate_ok(user_id):
-        send_reply(event.reply_token, "小亮需要休息一下，請 60 秒後再試。")
+        reply("小亮需要休息一下，請 60 秒後再試。")
         return
 
     # /myid — 查自己的 LINE userId（設定 ADMIN_USER_ID 用）
     if user_text == "/myid":
-        send_reply(event.reply_token, f"你的 LINE userId：\n{user_id}")
+        reply(f"你的 LINE userId：\n{user_id}")
         return
 
     # 清除對話
     if user_text in ("/reset", "清除對話", "重置"):
         conversations.clear(user_id)
-        send_reply(event.reply_token, "對話記憶已清除，我們重新開始。")
+        reply("對話記憶已清除，我們重新開始。")
         return
 
     # 幫助
     if user_text in ("幫助", "help", "Help", "說明"):
-        send_reply(event.reply_token, HELP_TEXT)
+        reply(HELP_TEXT)
         return
 
     # 查看記憶（哥限定）
     if user_text == "查看記憶":
         if not is_admin(user_id):
-            send_reply(event.reply_token, "這個指令只有哥可以使用。")
+            reply("這個指令只有哥可以使用。")
             return
-        send_reply(event.reply_token, memory.get_all_summary())
+        reply(memory.get_all_summary())
         return
 
     # 持倉損益（哥限定，群組中拒絕）
     if any(user_text.startswith(kw) for kw in PORTFOLIO_KW):
         if in_group:
-            send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
+            reply("個人財務資訊不在群組討論，請私訊給我。")
             return
         if not is_admin(user_id):
-            send_reply(event.reply_token, "持倉資訊只有哥可以查詢。")
+            reply("持倉資訊只有哥可以查詢。")
             return
-        send_reply(event.reply_token, get_portfolio_summary())
+        reply(get_portfolio_summary())
         return
 
     # 高耗能請求審核：哥同意/拒絕
     if is_admin(user_id) and user_text in ("同意", "執行"):
         if not _pending:
-            send_reply(event.reply_token, "目前沒有待審請求。")
+            reply("目前沒有待審請求。")
             return
         req = _pending.pop(0)
-        send_reply(event.reply_token, f"執行中，稍後回覆 {req['name']}。")
+        reply(f"執行中，稍後回覆 {req['name']}。")
         history = conversations.get(req["user_id"])
-        reply = claude.chat(history, req["text"])
+        result = claude.chat(history, req["text"])
         conversations.add(req["user_id"], "user", req["text"])
-        conversations.add(req["user_id"], "assistant", reply)
-        push_msg(req["user_id"], f"哥已同意，以下是回覆：\n\n{reply}")
+        conversations.add(req["user_id"], "assistant", result)
+        push_msg(req["user_id"], f"哥已同意，以下是回覆：\n\n{result}")
         return
 
     if is_admin(user_id) and user_text == "拒絕":
         if not _pending:
-            send_reply(event.reply_token, "目前沒有待審請求。")
+            reply("目前沒有待審請求。")
             return
         req = _pending.pop(0)
-        send_reply(event.reply_token, f"已拒絕 {req['name']} 的請求。")
+        reply(f"已拒絕 {req['name']} 的請求。")
         push_msg(req["user_id"], "哥考量後決定不處理這個請求，有其他問題歡迎再問。")
         return
 
     if is_admin(user_id) and user_text == "待審請求":
         if not _pending:
-            send_reply(event.reply_token, "目前沒有待審請求。")
+            reply("目前沒有待審請求。")
         else:
             lines = [f"待審請求（共 {len(_pending)} 筆）："]
             for i, r in enumerate(_pending, 1):
                 lines.append(f"{i}. {r['name']}：{r['text'][:50]}")
-            send_reply(event.reply_token, "\n".join(lines))
+            reply("\n".join(lines))
         return
 
     # 公司新聞查詢
     nm = NEWS_RE.match(user_text)
     if nm:
-        send_reply(event.reply_token, query_news(nm.group(1)))
+        reply(query_news(nm.group(1)))
         return
 
     # 記住指令
@@ -268,7 +283,7 @@ def handle_message(event: MessageEvent):
         name, _ = memory.get_member_by_id(user_id)
         recorder = "哥" if is_admin(user_id) else (name or user_id[:8])
         memory.add_event(content, recorder)
-        send_reply(event.reply_token, f"好的，已記住：{content}")
+        reply(f"好的，已記住：{content}")
         return
 
     # 新成員姓名流程：等待回覆姓名
@@ -276,23 +291,23 @@ def handle_message(event: MessageEvent):
         name = user_text.strip()
         memory.register_member(user_id, name)
         _awaiting_name.discard(user_id)
-        send_reply(event.reply_token, f"好的，{name}！很高興認識你，有什麼需要幫忙的嗎？")
+        reply(f"好的，{name}！很高興認識你，有什麼需要幫忙的嗎？")
         return
 
     # 新用戶第一次發言（非哥）
     if not is_admin(user_id) and memory.is_new_user(user_id):
         _awaiting_name.add(user_id)
-        send_reply(event.reply_token, "你好，我是小亮！請問怎麼稱呼你？")
+        reply("你好，我是小亮！請問怎麼稱呼你？")
         return
 
     # 隱私引導（群組中）
     if in_group and not is_admin(user_id) and any(kw in user_text for kw in PRIVACY_KW):
-        send_reply(event.reply_token, "這個問題比較私人，建議私訊給我，群組裡不方便討論。")
+        reply("這個問題比較私人，建議私訊給我，群組裡不方便討論。")
         return
 
     # 持倉查詢（群組中一律拒絕）
     if in_group and any(kw in user_text for kw in FINANCE_KW):
-        send_reply(event.reply_token, "個人財務資訊不在群組討論，請私訊給我。")
+        reply("個人財務資訊不在群組討論，請私訊給我。")
         return
 
     # 高耗能請求（非哥）
@@ -302,7 +317,7 @@ def handle_message(event: MessageEvent):
         member_name, _ = memory.get_member_by_id(user_id)
         display_name = member_name or user_id[:8]
         _pending.append({"user_id": user_id, "name": display_name, "text": user_text})
-        send_reply(event.reply_token, "這個請求需要消耗較多資源，已通知哥確認，請稍候。")
+        reply("這個請求需要消耗較多資源，已通知哥確認，請稍候。")
         if ADMIN_USER_ID:
             push_msg(
                 ADMIN_USER_ID,
@@ -332,11 +347,11 @@ def handle_message(event: MessageEvent):
         enhanced = f"{user_text}\n\n[即時股票資料]\n{stock_info}"
 
     history = conversations.get(user_id)
-    reply   = claude.chat(history, enhanced, "\n\n".join(ctx_parts))
+    result  = claude.chat(history, enhanced, "\n\n".join(ctx_parts))
     conversations.add(user_id, "user", user_text)
-    conversations.add(user_id, "assistant", reply)
+    conversations.add(user_id, "assistant", result)
 
-    send_reply(event.reply_token, reply)
+    reply(result)
 
 # ── 健康檢查 ────────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
