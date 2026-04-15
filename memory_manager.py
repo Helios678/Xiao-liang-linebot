@@ -89,6 +89,25 @@ class MemoryManager:
 
     # ── 摘要（查看記憶指令）──────────────────────────────────────────────────────
 
+    def edit_event(self, index: int, new_content: str) -> bool:
+        """修改群組事件（index 從 1 開始，對應 get_all_summary 的編號）。"""
+        events = self._data["群組事件"]
+        if index < 1 or index > len(events):
+            return False
+        events[index - 1]["內容"] = new_content
+        events[index - 1]["最後更新"] = str(date.today())
+        self._save()
+        return True
+
+    def delete_event(self, index: int) -> bool:
+        """刪除群組事件（index 從 1 開始）。"""
+        events = self._data["群組事件"]
+        if index < 1 or index > len(events):
+            return False
+        events.pop(index - 1)
+        self._save()
+        return True
+
     def get_all_summary(self) -> str:
         lines = ["【成員記憶】"]
         members = self._data["成員"]
@@ -99,11 +118,11 @@ class MemoryManager:
         else:
             lines.append("（目前無成員記錄）")
 
-        lines.append("\n【近期群組事件（最近10筆）】")
-        events = self._data["群組事件"][-10:]
+        lines.append("\n【群組事件（全部，附編號）】")
+        events = self._data["群組事件"]
         if events:
-            for e in events:
-                lines.append(f"・{e['日期']}  {e['內容']}  ─ {e['記錄者']}")
+            for i, e in enumerate(events, 1):
+                lines.append(f"{i}. {e['日期']}  {e['內容']}  ─ {e['記錄者']}")
         else:
             lines.append("（目前無事件記錄）")
 

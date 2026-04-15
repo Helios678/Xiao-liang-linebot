@@ -82,9 +82,11 @@ HELP_TEXT = (
     "📈 股票查詢：小亮 查2330 / 小亮 查台積電\n"
     "📰 公司新聞：小亮 查新聞 2330\n"
     "💼 持倉損益：小亮 持倉（僅哥）\n"
-    "🧠 記住事情：小亮 記住：...\n"
+    "🧠 記住事情：小亮 記住：...（限 50 字）\n"
     "🔄 清除對話：小亮 重置\n"
-    "📋 查看記憶：小亮 查看記憶（僅哥）\n\n"
+    "📋 查看記憶：小亮 查看記憶（僅哥）\n"
+    "✏️ 修改記憶：小亮 修改記憶 <編號> <新內容>（僅哥）\n"
+    "🗑️ 刪除記憶：小亮 刪除記憶 <編號>（僅哥）\n\n"
     "私人問題建議私訊給我，群組裡不討論個人隱私。"
 )
 
@@ -296,13 +298,45 @@ def handle_message(event: MessageEvent):
         reply(query_news(nm.group(1)))
         return
 
-    # 記住指令
+    # 記住指令（限 50 字）
     if user_text.startswith("記住：") or user_text.startswith("記住:"):
         content = user_text[3:].strip()
+        if len(content) > 50:
+            reply(f"內容太長（{len(content)} 字），請精簡在 50 字以內。")
+            return
         name, _ = memory.get_member_by_id(user_id)
         recorder = "哥" if is_admin(user_id) else (name or user_id[:8])
         memory.add_event(content, recorder)
         reply(f"好的，已記住：{content}")
+        return
+
+    # 修改記憶（哥限定）：修改記憶 <編號> <新內容>
+    if user_text.startswith("修改記憶") and is_admin(user_id):
+        parts = user_text[4:].strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            reply("格式：修改記憶 <編號> <新內容>\n例如：修改記憶 3 今天吃火鍋")
+            return
+        idx, new_content = int(parts[0]), parts[1].strip()
+        if len(new_content) > 50:
+            reply(f"新內容太長（{len(new_content)} 字），請精簡在 50 字以內。")
+            return
+        if memory.edit_event(idx, new_content):
+            reply(f"第 {idx} 筆已更新為：{new_content}")
+        else:
+            reply(f"找不到第 {idx} 筆，請先用「查看記憶」確認編號。")
+        return
+
+    # 刪除記憶（哥限定）：刪除記憶 <編號>
+    if user_text.startswith("刪除記憶") and is_admin(user_id):
+        idx_str = user_text[4:].strip()
+        if not idx_str.isdigit():
+            reply("格式：刪除記憶 <編號>\n例如：刪除記憶 3")
+            return
+        idx = int(idx_str)
+        if memory.delete_event(idx):
+            reply(f"第 {idx} 筆已刪除。")
+        else:
+            reply(f"找不到第 {idx} 筆，請先用「查看記憶」確認編號。")
         return
 
     # 新成員姓名流程：等待回覆姓名
