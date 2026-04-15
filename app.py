@@ -60,8 +60,8 @@ def _rate_ok(user_id: str) -> bool:
     q.append(now)
     return True
 
-# ── 等待姓名輸入的用戶（記憶體中暫存）──────────────────────────────────────────
-_awaiting_name: set[str] = set()
+# ── 等待姓名輸入的用戶（user_id → 暫存的第一則問題）──────────────────────────────
+_pending_intro: dict[str, str] = {}
 
 # ── 高耗能請求待審佇列 ───────────────────────────────────────────────────────────
 # [{user_id, source_id, text, name}]
@@ -195,7 +195,7 @@ def handle_message(event: MessageEvent):
     if in_group:
         m = TRIGGER.match(raw_text)
         if not m:
-            if user_id not in _awaiting_name:
+            if user_id not in _pending_intro:
                 return
             user_text = raw_text.strip()
             if not user_text:
@@ -348,18 +348,46 @@ def handle_message(event: MessageEvent):
             reply(f"找不到第 {idx} 筆，請先用「查看記憶」確認編號。")
         return
 
-    # 新成員姓名流程：等待回覆姓名
-    if user_id in _awaiting_name and not is_admin(user_id):
-        name = user_text.strip()
-        memory.register_member(user_id, name)
-        _awaiting_name.discard(user_id)
-        reply(f"好的，{name}！很高興認識你，有什麼需要幫忙的嗎？")
+    # 新用戶第一次發言（非哥）→ 記下問題，詢問姓名
+    if not is_admin(user_id) and memory.is_new_user(user_id):
+        _pending_intro[user_id] = user_text
+        reply(
+            "你好，我是小亮！\n"
+            f"你的問題我記下了：「{user_text[:40]}{'...' if len(user_text) > 40 else ''}」\n\n"
+            "請先告訴我你的稱呼，方便我更新記憶、提供更好的服務。\n"
+            "格式：直接輸入名字，例如「我叫小明」或「Paul」"
+        )
         return
 
-    # 新用戶第一次發言（非哥）
-    if not is_admin(user_id) and memory.is_new_user(user_id):
-        _awaiting_name.add(user_id)
-        reply("你好，我是小亮！請問怎麼稱呼你？")
+    # 新成員姓名流程：等待回覆姓名
+    if user_id in _pending_intro and not is_admin(user_id):
+        # 解析姓名：支援「我叫XXX」「我是XXX」或直接輸入
+        raw_name = user_text.strip()
+        for prefix in ("我叫", "我是"):
+            if raw_name.startswith(prefix):
+                raw_name = raw_name[len(prefix):].strip()
+                break
+        name = raw_name or user_text.strip()
+
+        memory.register_member(user_id, name)
+        original_question = _pending_intro.pop(user_id)
+
+        # 先確認姓名登記，再於背景回答原先的問題
+        reply(f"好的，{name}！很高興認識你，我來回答你剛才的問題。")
+
+        def _answer_pending():
+            try:
+                ctx = [f"【用戶背景】\n用戶稱呼：{name}（剛完成自我介紹）"]
+                history = conversations.get(user_id)
+                result = claude.chat(history, original_question, "\n\n".join(ctx))
+                conversations.add(user_id, "user", original_question)
+                conversations.add(user_id, "assistant", result)
+                push_msg(source_id, result)
+            except Exception as e:
+                print(f"[ERROR] _answer_pending failed: {e}")
+                push_msg(source_id, f"小亮處理時出錯了：{e}")
+
+        threading.Thread(target=_answer_pending, daemon=True).start()
         return
 
     # 隱私引導（群組中）
