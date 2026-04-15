@@ -26,6 +26,11 @@ WEB_SEARCH_TOOL = {
     "name": "web_search",
 }
 
+# claude-sonnet-4-6 定價（USD per million tokens）
+INPUT_PRICE_PER_M  = 3.0
+OUTPUT_PRICE_PER_M = 15.0
+COST_ALERT_USD     = 1.0  # 單次請求預估超過此金額時需哥審核
+
 
 class ClaudeClient:
     def __init__(self, api_key: str):
@@ -85,6 +90,21 @@ class ClaudeClient:
             f"cache_create={cache_create} cache_read={cache_read} "
             f"| 累計 in={self._input_tokens:,} out={self._output_tokens:,}"
         )
+
+    def estimate_cost_for_request(self, history: list[dict], user_message: str, extra_context: str = "") -> float:
+        """估算一次 API 呼叫的費用上限（USD）。用字元數近似 token，中英混合約 3 字元 = 1 token。"""
+        system = BASE_SYSTEM
+        if extra_context:
+            system = f"{BASE_SYSTEM}\n\n{extra_context}"
+        messages = history + [{"role": "user", "content": user_message}]
+        total_chars = len(system) + sum(
+            len(m["content"]) if isinstance(m.get("content"), str) else 0
+            for m in messages
+        )
+        input_tokens = total_chars / 3
+        input_cost   = input_tokens * INPUT_PRICE_PER_M / 1_000_000
+        output_cost  = 2048 * OUTPUT_PRICE_PER_M / 1_000_000
+        return input_cost + output_cost
 
     def get_stats(self) -> str:
         return (

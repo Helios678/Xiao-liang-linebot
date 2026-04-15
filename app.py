@@ -26,7 +26,7 @@ from linebot.v3.webhooks import (
 )
 
 from conversation import ConversationManager
-from claude_client import ClaudeClient
+from claude_client import ClaudeClient, COST_ALERT_USD
 from stock_client import query_stock, query_news
 from memory_manager import MemoryManager
 from portfolio_client import get_portfolio_summary
@@ -359,6 +359,23 @@ def handle_message(event: MessageEvent):
 
     # 判斷是否需要啟用網路搜尋
     enable_search = any(kw in user_text for kw in SEARCH_KW)
+
+    # 費用估算審核（非哥，預估超過 COST_ALERT_USD 需確認）
+    if not is_admin(user_id):
+        est_cost = claude.estimate_cost_for_request(
+            conversations.get(user_id), enhanced, "\n\n".join(ctx_parts)
+        )
+        if est_cost > COST_ALERT_USD:
+            member_name, _ = memory.get_member_by_id(user_id)
+            display_name = member_name or user_id[:8]
+            _pending.append({"user_id": user_id, "name": display_name, "text": user_text})
+            reply(f"這個請求預估費用較高（約 ${est_cost:.2f} USD），已通知哥確認，請稍候。")
+            if ADMIN_USER_ID:
+                push_msg(
+                    ADMIN_USER_ID,
+                    f"收到 {display_name} 的高費用請求（預估 ${est_cost:.2f} USD）：\n\n{user_text[:200]}\n\n回覆「同意」執行，「拒絕」則婉拒。"
+                )
+            return
 
     # Claude 呼叫在背景執行緒跑，避免佔住 Webhook 回應時間
     # reply_token 可能在 Claude 回來前過期，直接用 push_msg 送出
