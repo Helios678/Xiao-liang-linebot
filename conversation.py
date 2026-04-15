@@ -2,7 +2,7 @@
 對話歷史管理 — 每個 LINE userId 維護獨立的對話紀錄
 """
 
-MAX_HISTORY = 20  # 每個用戶保留最近幾則
+MAX_HISTORY = 10  # 每個用戶保留最近幾則
 
 
 class ConversationManager:
