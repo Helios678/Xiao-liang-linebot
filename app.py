@@ -190,7 +190,7 @@ def handle_message(event: MessageEvent):
     def reply(text: str):
         send_reply(event.reply_token, text, fallback_to=source_id)
 
-    # 群組模式：只回應觸發詞開頭
+    # 群組模式：只回應觸發詞開頭；私訊模式：有觸發詞則剝離，沒有則全文使用
     if in_group:
         m = TRIGGER.match(raw_text)
         if not m:
@@ -199,7 +199,10 @@ def handle_message(event: MessageEvent):
         if not user_text:
             return
     else:
-        user_text = raw_text
+        m = TRIGGER.match(raw_text)
+        user_text = raw_text[m.end():].strip() if m else raw_text
+        if not user_text:
+            user_text = raw_text
 
     # Rate Limiting（哥豁免）
     if not is_admin(user_id) and not _rate_ok(user_id):
