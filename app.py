@@ -74,7 +74,6 @@ NEWS_RE       = re.compile(r"^(?:查新聞|新聞)\s*(\d{4,6})")
 PRIVACY_KW    = ["感情", "戀愛", "外遇", "病情", "診斷", "收入", "薪水", "存款", "債務"]
 FINANCE_KW    = ["持倉", "損益", "投資組合", "我的股票", "我的持股"]
 PORTFOLIO_KW  = ["持倉", "損益", "查持倉", "投資組合"]
-HIGH_ENERGY_KW = ["幫我寫", "寫一篇", "翻譯全文", "詳細分析", "完整報告", "全面分析", "幫我研究"]
 SEARCH_KW     = ["搜尋", "上網查", "上網找", "查最新", "最新消息", "最新新聞", "幫我搜"]
 
 HELP_TEXT = (
@@ -321,10 +320,8 @@ def handle_message(event: MessageEvent):
         reply("個人財務資訊不在群組討論，請私訊給我。")
         return
 
-    # 高耗能請求（非哥）
-    if not is_admin(user_id) and (
-        len(user_text) > 200 or any(kw in user_text for kw in HIGH_ENERGY_KW)
-    ):
+    # 高耗能請求審核（非哥）：用 Haiku 預判意圖
+    if not is_admin(user_id) and claude.is_high_cost_intent(user_text):
         member_name, _ = memory.get_member_by_id(user_id)
         display_name = member_name or user_id[:8]
         _pending.append({"user_id": user_id, "name": display_name, "text": user_text})

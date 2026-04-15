@@ -91,6 +91,27 @@ class ClaudeClient:
             f"| 累計 in={self._input_tokens:,} out={self._output_tokens:,}"
         )
 
+    def is_high_cost_intent(self, user_message: str) -> bool:
+        """用 Haiku 預判請求是否會產生高 token 消耗，失敗時放行。"""
+        try:
+            resp = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                system=(
+                    "你是 LINE 機器人的請求分類器。"
+                    "判斷以下用戶請求是否屬於「高 token 消耗」類型，"
+                    "包括：生成長篇文章、大量翻譯、詳細分析或報告、多步驟研究、需要大量搜尋整理。"
+                    "簡單問答、股票查詢、日常閒聊、單句翻譯不屬於高消耗。"
+                    "只回答 yes 或 no。"
+                ),
+                messages=[{"role": "user", "content": user_message}],
+            )
+            answer = resp.content[0].text.strip().lower()
+            return answer.startswith("y")
+        except Exception as e:
+            print(f"[WARN] is_high_cost_intent failed: {e}")
+            return False  # 判斷失敗時放行，不影響正常使用
+
     def estimate_cost_for_request(self, history: list[dict], user_message: str, extra_context: str = "") -> float:
         """估算一次 API 呼叫的費用上限（USD）。用字元數近似 token，中英混合約 3 字元 = 1 token。"""
         system = BASE_SYSTEM
