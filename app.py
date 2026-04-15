@@ -209,6 +209,15 @@ def handle_message(event: MessageEvent):
         reply(f"你的 LINE userId：\n{user_id}")
         return
 
+    # /模擬 <訊息> — 哥限定，以一般用戶身份測試審核流程
+    simulate_user = False
+    if is_admin(user_id) and user_text.startswith("/模擬 "):
+        user_text = user_text[4:].strip()
+        simulate_user = True
+        if not user_text:
+            reply("用法：/模擬 <要測試的訊息>")
+            return
+
     # 清除對話
     if user_text in ("/reset", "清除對話", "重置"):
         conversations.clear(user_id)
@@ -320,8 +329,8 @@ def handle_message(event: MessageEvent):
         reply("個人財務資訊不在群組討論，請私訊給我。")
         return
 
-    # 高耗能請求審核（非哥）：用 Haiku 預判意圖
-    if not is_admin(user_id) and claude.is_high_cost_intent(user_text):
+    # 高耗能請求審核（非哥，或模擬模式）：用 Haiku 預判意圖
+    if (not is_admin(user_id) or simulate_user) and claude.is_high_cost_intent(user_text):
         member_name, _ = memory.get_member_by_id(user_id)
         display_name = member_name or user_id[:8]
         _pending.append({"user_id": user_id, "name": display_name, "text": user_text})
@@ -357,8 +366,8 @@ def handle_message(event: MessageEvent):
     # 判斷是否需要啟用網路搜尋
     enable_search = any(kw in user_text for kw in SEARCH_KW)
 
-    # 費用估算審核（非哥，預估超過 COST_ALERT_USD 需確認）
-    if not is_admin(user_id):
+    # 費用估算審核（非哥，或模擬模式，預估超過 COST_ALERT_USD 需確認）
+    if not is_admin(user_id) or simulate_user:
         est_cost = claude.estimate_cost_for_request(
             conversations.get(user_id), enhanced, "\n\n".join(ctx_parts)
         )
