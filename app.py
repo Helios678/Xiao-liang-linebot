@@ -191,13 +191,19 @@ def handle_message(event: MessageEvent):
         send_reply(event.reply_token, text, fallback_to=source_id)
 
     # 群組模式：只回應觸發詞開頭；私訊模式：有觸發詞則剝離，沒有則全文使用
+    # 例外：用戶正在等待輸入姓名時，允許不帶觸發詞的回覆
     if in_group:
         m = TRIGGER.match(raw_text)
         if not m:
-            return
-        user_text = raw_text[m.end():].strip()
-        if not user_text:
-            return
+            if user_id not in _awaiting_name:
+                return
+            user_text = raw_text.strip()
+            if not user_text:
+                return
+        else:
+            user_text = raw_text[m.end():].strip()
+            if not user_text:
+                return
     else:
         m = TRIGGER.match(raw_text)
         user_text = raw_text[m.end():].strip() if m else raw_text
