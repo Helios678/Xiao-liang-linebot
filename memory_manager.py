@@ -1,5 +1,5 @@
 """
-家人記憶管理 — 讀寫 family_memory.json
+家人記憶管理 — 優先存 Redis，無 REDIS_URL 時退回 family_memory.json
 """
 
 import json
@@ -7,15 +7,37 @@ import os
 from datetime import date
 
 MEMORY_FILE = os.path.join(os.path.dirname(__file__), "family_memory.json")
-
-_EMPTY = {"成員": {}, "群組事件": []}
+REDIS_KEY   = "xiao_liang:family_memory"
 
 
 class MemoryManager:
     def __init__(self):
-        self._data = self._load()
+        self._redis = self._connect_redis()
+        self._data  = self._load()
+
+    def _connect_redis(self):
+        url = os.environ.get("REDIS_URL")
+        if not url:
+            return None
+        try:
+            import redis
+            r = redis.from_url(url, decode_responses=True)
+            r.ping()
+            print("[INFO] Redis connected")
+            return r
+        except Exception as e:
+            print(f"[WARN] Redis connection failed: {e}, fallback to file")
+            return None
 
     def _load(self) -> dict:
+        if self._redis:
+            try:
+                raw = self._redis.get(REDIS_KEY)
+                if raw:
+                    return json.loads(raw)
+            except Exception as e:
+                print(f"[WARN] Redis load failed: {e}")
+        # 退回本地檔案
         if os.path.exists(MEMORY_FILE):
             try:
                 with open(MEMORY_FILE, "r", encoding="utf-8") as f:
@@ -25,6 +47,13 @@ class MemoryManager:
         return {"成員": {}, "群組事件": []}
 
     def _save(self):
+        if self._redis:
+            try:
+                self._redis.set(REDIS_KEY, json.dumps(self._data, ensure_ascii=False))
+                return
+            except Exception as e:
+                print(f"[WARN] Redis save failed: {e}")
+        # 退回本地檔案
         try:
             with open(MEMORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, ensure_ascii=False, indent=2)
