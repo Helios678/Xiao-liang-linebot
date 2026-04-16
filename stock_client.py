@@ -5,6 +5,7 @@
 import json
 import re
 import ssl
+import time
 import urllib.request
 
 _SSL_CTX = ssl.create_default_context()
@@ -18,6 +19,10 @@ _HEADERS = {
 }
 
 # 常見股票名稱對照表（名稱 → (代碼, 市場)）
+# 股票查詢快取（query → (timestamp, result)），TTL 60 秒
+_quote_cache: dict[str, tuple[float, str]] = {}
+_CACHE_TTL = 60
+
 NAME_MAP = {
     "台積電": ("2330", "tse"),
     "鴻海": ("2317", "tse"),
@@ -86,8 +91,13 @@ def query_news(code: str) -> str:
 
 
 def query_stock(query: str) -> str:
-    """查詢股票，回傳純文字結果。"""
+    """查詢股票，回傳純文字結果（60 秒內重複查詢走快取）。"""
     query = query.strip()
+    now = time.time()
+    if query in _quote_cache:
+        ts, cached = _quote_cache[query]
+        if now - ts < _CACHE_TTL:
+            return cached
     q = None
     market = None
 
@@ -158,4 +168,6 @@ def query_stock(query: str) -> str:
     if volume:
         lines.append(f"成交量：{volume:,.0f} 張")
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _quote_cache[query] = (time.time(), result)
+    return result

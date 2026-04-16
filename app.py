@@ -6,7 +6,9 @@
 import os
 import re
 import time
+import json
 import threading
+import urllib.request
 from collections import defaultdict, deque
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -139,6 +141,24 @@ def push_msg(to: str, text: str):
         print(f"[INFO] push_msg OK → {to[:12]}")
     except Exception as e:
         print(f"[ERROR] push_msg FAILED → {to[:12]} | {e}")
+
+def show_loading(chat_id: str, seconds: int = 30):
+    """送出 Loading Animation，讓用戶知道正在處理中。"""
+    payload = json.dumps({"chatId": chat_id, "loadingSeconds": seconds}).encode()
+    req = urllib.request.Request(
+        "https://api.line.me/v2/bot/chat/loading/start",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception as e:
+        print(f"[WARN] show_loading failed: {e}")
 
 # ── Webhook 端點 ────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
@@ -478,6 +498,7 @@ def handle_message(event: MessageEvent):
     # Claude 呼叫在背景執行緒跑，避免佔住 Webhook 回應時間
     # reply_token 可能在 Claude 回來前過期，直接用 push_msg 送出
     def _call_claude():
+        show_loading(source_id, seconds=30)
         print(f"[INFO] _call_claude start | source={source_id[:12]} user={user_id[:12]}")
         try:
             history = conversations.get(user_id)
