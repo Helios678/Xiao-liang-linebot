@@ -496,7 +496,8 @@ def handle_message(event: MessageEvent):
             return
 
     # Claude 呼叫在背景執行緒跑，避免佔住 Webhook 回應時間
-    # reply_token 可能在 Claude 回來前過期，直接用 push_msg 送出
+    # 優先用 Reply API（不佔 Push 月額度），超時才 fallback push
+    reply_token = event.reply_token
     def _call_claude():
         show_loading(source_id, seconds=30)
         print(f"[INFO] _call_claude start | source={source_id[:12]} user={user_id[:12]}")
@@ -505,10 +506,10 @@ def handle_message(event: MessageEvent):
             result  = claude.chat(history, enhanced, "\n\n".join(ctx_parts), enable_search=enable_search)
             conversations.add(user_id, "user", user_text)
             conversations.add(user_id, "assistant", result)
-            push_msg(source_id, result)
+            send_reply(reply_token, result, fallback_to=source_id)
         except Exception as e:
             print(f"[ERROR] _call_claude failed: {e}")
-            push_msg(source_id, f"小亮處理時出錯了：{e}")
+            send_reply(reply_token, f"小亮處理時出錯了：{e}", fallback_to=source_id)
 
     threading.Thread(target=_call_claude, daemon=True).start()
 
