@@ -131,10 +131,14 @@ def send_reply(reply_token: str, text: str, fallback_to: str = ""):
             push_msg(fallback_to, text)
 
 def push_msg(to: str, text: str):
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).push_message(
-            PushMessageRequest(to=to, messages=[TextMessage(text=text)])
-        )
+    try:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                PushMessageRequest(to=to, messages=[TextMessage(text=text)])
+            )
+        print(f"[INFO] push_msg OK → {to[:12]}")
+    except Exception as e:
+        print(f"[ERROR] push_msg FAILED → {to[:12]} | {e}")
 
 # ── Webhook 端點 ────────────────────────────────────────────────────────────────
 @app.route("/webhook", methods=["POST"])
@@ -474,6 +478,7 @@ def handle_message(event: MessageEvent):
     # Claude 呼叫在背景執行緒跑，避免佔住 Webhook 回應時間
     # reply_token 可能在 Claude 回來前過期，直接用 push_msg 送出
     def _call_claude():
+        print(f"[INFO] _call_claude start | source={source_id[:12]} user={user_id[:12]}")
         try:
             history = conversations.get(user_id)
             result  = claude.chat(history, enhanced, "\n\n".join(ctx_parts), enable_search=enable_search)
