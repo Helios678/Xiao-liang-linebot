@@ -4,7 +4,7 @@
 
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 
 MEMORY_FILE = os.path.join(os.path.dirname(__file__), "family_memory.json")
 REDIS_KEY   = "xiao_liang:family_memory"
@@ -136,6 +136,30 @@ class MemoryManager:
         events.pop(index - 1)
         self._save()
         return True
+
+    # ── 群組時間軸 ───────────────────────────────────────────────────────────────
+
+    def add_group_message(self, user_name: str, text: str):
+        """自動記錄群組發言，保留最近 10 則。"""
+        timeline = self._data.setdefault("群組時間軸", [])
+        timeline.append({
+            "時間": datetime.now().strftime("%m/%d %H:%M"),
+            "成員": user_name,
+            "訊息": text[:100],
+        })
+        self._data["群組時間軸"] = timeline[-10:]
+        self._save()
+
+    def get_group_timeline(self) -> str:
+        timeline = self._data.get("群組時間軸", [])
+        if not timeline:
+            return "（目前沒有群組對話記錄）"
+        lines = ["【近期群組對話（最近10則）】"]
+        for entry in timeline:
+            lines.append(f"・{entry['時間']} {entry['成員']}：{entry['訊息']}")
+        return "\n".join(lines)
+
+    # ── 摘要（查看記憶指令）──────────────────────────────────────────────────────
 
     def get_all_summary(self) -> str:
         lines = ["【成員記憶】"]
