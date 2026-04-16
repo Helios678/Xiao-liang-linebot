@@ -348,31 +348,21 @@ def handle_message(event: MessageEvent):
             reply(f"找不到第 {idx} 筆，請先用「查看記憶」確認編號。")
         return
 
-    # 新用戶第一次發言（非哥）→ 記下問題，詢問姓名
-    if not is_admin(user_id) and memory.is_new_user(user_id):
-        _pending_intro[user_id] = user_text
-        reply(
-            "你好，我是小亮！\n"
-            f"你的問題我記下了：「{user_text[:40]}{'...' if len(user_text) > 40 else ''}」\n\n"
-            "請先告訴我你的稱呼，方便我更新記憶、提供更好的服務。\n"
-            "格式：直接輸入名字，例如「我叫小明」或「Paul」"
-        )
-        return
-
-    # 新成員姓名流程：等待回覆姓名
-    if user_id in _pending_intro and not is_admin(user_id):
-        # 解析姓名：支援「我叫XXX」「我是XXX」或直接輸入
-        raw_name = user_text.strip()
+    # ── 自介姓名解析工具 ────────────────────────────────────────────────────────────
+    def _extract_name(text: str) -> str | None:
+        """從文字中抽取姓名；支援「我叫XXX」「我是XXX」，否則回傳 None。"""
         for prefix in ("我叫", "我是"):
-            if raw_name.startswith(prefix):
-                raw_name = raw_name[len(prefix):].strip()
-                break
-        name = raw_name or user_text.strip()
+            if text.startswith(prefix):
+                n = text[len(prefix):].strip()
+                return n if n else None
+        return None
 
+    # 新成員姓名流程（優先檢查，避免被下方新用戶檢查覆蓋）
+    if user_id in _pending_intro and not is_admin(user_id):
+        name = _extract_name(user_text) or user_text.strip()
         memory.register_member(user_id, name)
         original_question = _pending_intro.pop(user_id)
 
-        # 先確認姓名登記，再於背景回答原先的問題
         reply(f"好的，{name}！很高興認識你，我來回答你剛才的問題。")
 
         def _answer_pending():
@@ -388,6 +378,23 @@ def handle_message(event: MessageEvent):
                 push_msg(source_id, f"小亮處理時出錯了：{e}")
 
         threading.Thread(target=_answer_pending, daemon=True).start()
+        return
+
+    # 新用戶第一次發言（非哥）
+    if not is_admin(user_id) and memory.is_new_user(user_id):
+        # 若第一則訊息本身就是自介格式，直接登記不需暫存
+        intro_name = _extract_name(user_text)
+        if intro_name:
+            memory.register_member(user_id, intro_name)
+            reply(f"好的，{intro_name}！很高興認識你，有什麼需要幫忙的嗎？")
+        else:
+            _pending_intro[user_id] = user_text
+            reply(
+                "你好，我是小亮！\n"
+                f"你的問題我記下了：「{user_text[:40]}{'...' if len(user_text) > 40 else ''}」\n\n"
+                "請先告訴我你的稱呼，方便我更新記憶、提供更好的服務。\n"
+                "格式：直接輸入名字，例如「我叫小明」或「Paul」"
+            )
         return
 
     # 隱私引導（群組中）
