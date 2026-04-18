@@ -11,7 +11,7 @@ import threading
 import urllib.request
 from collections import defaultdict, deque
 from dotenv import load_dotenv
-from flask import Flask, request, abort, send_from_directory
+from flask import Flask, request, abort
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -32,8 +32,6 @@ from claude_client import ClaudeClient, COST_ALERT_USD
 from stock_client import query_stock, query_news
 from memory_manager import MemoryManager
 from portfolio_client import get_portfolio_summary
-from morning import send_morning
-from image_gen import IMAGE_DIR
 
 # ── 載入環境變數 ────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -42,9 +40,6 @@ ANTHROPIC_API_KEY         = os.environ["ANTHROPIC_API_KEY"]
 LINE_CHANNEL_SECRET       = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 ADMIN_USER_ID             = os.environ.get("ADMIN_USER_ID", "")
-GEMINI_API_KEY            = os.environ.get("GEMINI_API_KEY", "")
-CRON_SECRET               = os.environ.get("CRON_SECRET", "")
-PUBLIC_BASE_URL           = os.environ.get("PUBLIC_BASE_URL", "https://xiao-liang-linebot.onrender.com")
 
 # ── 初始化 ──────────────────────────────────────────────────────────────────────
 app           = Flask(__name__)
@@ -517,42 +512,6 @@ def handle_message(event: MessageEvent):
             send_reply(reply_token, f"小亮處理時出錯了：{e}", fallback_to=source_id)
 
     threading.Thread(target=_call_claude, daemon=True).start()
-
-# ── 每日早安圖（cron-job.org 定時觸發）──────────────────────────────────────────
-@app.route("/cron/morning", methods=["GET", "POST"])
-def cron_morning():
-    token = request.args.get("token") or request.headers.get("X-Cron-Secret", "")
-    if not CRON_SECRET or token != CRON_SECRET:
-        abort(403)
-    if not ADMIN_USER_ID:
-        return "ADMIN_USER_ID 未設定", 500
-    if not GEMINI_API_KEY:
-        return "GEMINI_API_KEY 未設定", 500
-
-    def _run():
-        try:
-            result = send_morning(
-                LINE_CHANNEL_ACCESS_TOKEN,
-                ADMIN_USER_ID,
-                GEMINI_API_KEY,
-                ANTHROPIC_API_KEY,
-                PUBLIC_BASE_URL,
-            )
-            print(f"[INFO] morning sent OK | themes={result['themes']}")
-        except Exception as e:
-            print(f"[ERROR] morning failed: {e}")
-            try:
-                push_msg(ADMIN_USER_ID, f"早安圖產生失敗：{e}")
-            except Exception:
-                pass
-
-    threading.Thread(target=_run, daemon=True).start()
-    return "OK", 200
-
-# ── 靜態圖床（LINE 抓取早安圖用）───────────────────────────────────────────────
-@app.route("/img/<path:filename>", methods=["GET"])
-def serve_image(filename):
-    return send_from_directory(IMAGE_DIR, filename)
 
 # ── 健康檢查 ────────────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
